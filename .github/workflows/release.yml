@@ -102,6 +102,17 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
           security list-keychain -d user -s $KEYCHAIN_PATH
 
+          # Derive the signing identity from the imported certificate so
+          # an APPLE_SIGNING_IDENTITY secret is not required.
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | sed -n 's/.*"\(.*\)"/\1/p' | head -1)
+          if [ -z "$IDENTITY" ]; then
+            echo "No codesigning identity found in the imported certificate" >&2
+            exit 1
+          fi
+          echo "Using signing identity: $IDENTITY"
+          echo "DERIVED_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
       - name: Verify Apple notary credentials
         if: runner.os == 'macOS'
         env:
@@ -182,8 +193,9 @@ jobs:
           # Tauri updater signing (optional; only set if you have keys)
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS code signing
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # macOS code signing: explicit secret wins, otherwise the
+          # identity derived from the imported certificate.
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || env.DERIVED_SIGNING_IDENTITY }}
           # macOS notarization
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
