@@ -178,6 +178,18 @@ pub fn clean_title(raw: &str) -> String {
         _ => head,
     };
     let cleaned = noise.replace_all(head, "");
+
+    // Scanlation sites love "Read <Title> Manga Online (Free)" wrappers.
+    static LEAD: OnceLock<Regex> = OnceLock::new();
+    static TAIL: OnceLock<Regex> = OnceLock::new();
+    let lead = LEAD.get_or_init(|| Regex::new(r"(?i)^\s*read\s+").expect("title lead regex"));
+    let tail = TAIL.get_or_init(|| {
+        Regex::new(r"(?i)(?:\s+(?:manga|manhwa|manhua|scans?|scanlations?))?(?:\s+online)?(?:\s+free)?\s*$")
+            .expect("title tail regex")
+    });
+    let cleaned = lead.replace(&cleaned, "");
+    let cleaned = tail.replace(&cleaned, "");
+
     let cleaned = cleaned.trim().trim_end_matches(['-', ':', ',']).trim();
     if cleaned.len() >= 3 {
         cleaned.to_string()
@@ -273,7 +285,24 @@ mod tests {
         );
         assert_eq!(
             clean_title("Rent a Girlfriend Manga - Read Chapters Online"),
-            "Rent a Girlfriend Manga"
+            "Rent a Girlfriend"
+        );
+    }
+
+    #[test]
+    fn clean_title_strips_read_online_wrappers() {
+        // Wrappers seen in the wild on scanlation homepages.
+        assert_eq!(
+            clean_title("Read Zom 100: Bucket List of the Dead Manga Online"),
+            "Zom 100: Bucket List of the Dead"
+        );
+        assert_eq!(
+            clean_title("Smoking Behind the Supermarket with You Manga Online"),
+            "Smoking Behind the Supermarket with You"
+        );
+        assert_eq!(
+            clean_title("Read Rent a Girlfriend Manga Online"),
+            "Rent a Girlfriend"
         );
     }
 

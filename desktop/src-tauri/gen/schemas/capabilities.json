@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Capability for the main library window. Reader windows load remote scanlation sites and get no IPC at all — progress tracking happens on the Rust side via page-load hooks.","local":true,"windows":["main"],"permissions":["core:default","notification:default","opener:default"]}}

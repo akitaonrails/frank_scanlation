@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import type { Manga } from "$lib/types";
   import { addManga, checkUpdates, listManga } from "$lib/ipc";
@@ -19,6 +20,11 @@
   }
 
   onMount(async () => {
+    // Crash-recovery handshake: the Rust side touched a marker at
+    // startup; reaching this point proves the WebView renders, so
+    // clear it. If we never get here, the next launch auto-falls-back
+    // to safe rendering. See src-tauri/src/render_env.rs.
+    void invoke("mark_app_ready").catch(() => {});
     await refresh();
     // The Rust side emits this whenever reader navigation records
     // progress or the background checker finds a new chapter.

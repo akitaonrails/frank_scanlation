@@ -6,6 +6,13 @@
 //! progress is tracked entirely on the Rust side by watching page loads
 //! in that window — remote pages never get IPC access.
 
+// GPU + display-server detection and WebKit render-mode policy, taken
+// from FRANK MANGA+ where it was battle-tested against the Wayland/EGL
+// crashes WebKitGTK hits on some driver stacks. Pure logic + tests live
+// in render_env.rs; run() wires it in before any thread spawns.
+#[cfg(target_os = "linux")]
+mod render_env;
+
 use scanlation_core::extract::{extract_site_info, SiteInfo};
 use scanlation_core::fetch::{cover_extension, Fetcher};
 use scanlation_core::heuristics::chapter_info_from_url;
@@ -165,6 +172,18 @@ fn normalized_url(input: &str) -> Result<Url, String> {
 
 // ---------- commands ----------
 
+/// Frontend handshake — called from the SvelteKit page on first render.
+/// Clears the crash-recovery marker touched at startup; if the WebView
+/// aborts before this fires, the marker survives and the NEXT launch
+/// falls back to Safe rendering automatically. See render_env.rs.
+#[tauri::command]
+fn mark_app_ready() {
+    #[cfg(target_os = "linux")]
+    {
+        render_env::clear_recovery_marker(&config_dir());
+    }
+}
+
 #[tauri::command]
 fn list_manga(state: State<'_, AppState>) -> Result<Vec<Manga>, String> {
     with_library(&state, |lib| lib.list())
@@ -287,6 +306,22 @@ async fn open_manga(
     let open_url = resolve_open_url(&manga, &target, site.as_ref());
     let url = Url::parse(&open_url).map_err(|e| format!("bad target url: {e}"))?;
 
+    // Webview windows must be created on the main (GTK) thread; async
+    // commands run on a worker thread, so dispatch and await the result.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let app_handle = app.clone();
+    let title = manga.title.clone();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(open_reader_window(&app_handle, id, &title, url));
+    })
+    .map_err(|e| e.to_string())?;
+    rx.await
+        .map_err(|e| format!("window creation dropped: {e}"))?
+}
+
+/// Navigate the manga's existing reader window, or create it. Must run
+/// on the main thread.
+fn open_reader_window(app: &AppHandle, id: i64, title: &str, url: Url) -> Result<(), String> {
     let label = reader_label(id);
     if let Some(window) = app.get_webview_window(&label) {
         window.navigate(url).map_err(|e| e.to_string())?;
@@ -295,8 +330,8 @@ async fn open_manga(
     }
 
     let init_script = reader_init_script();
-    WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(url))
-        .title(&manga.title)
+    WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
+        .title(title)
         .inner_size(1280.0, 960.0)
         .initialization_script(init_script.as_str())
         .on_page_load(|window, payload| {
@@ -402,6 +437,60 @@ fn spawn_update_checker(app: AppHandle, library: Arc<Mutex<Library>>, fetcher: F
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Linux-only: pick a WebKit render mode based on the actual
+    // hardware + display server. Order of precedence (highest first):
+    //   1. FRANK_SCANLATION_RENDER_MODE env var
+    //   2. <config_dir>/render.conf `mode = ...`
+    //   3. Crash recovery (last run left a marker behind) → Safe
+    //   4. Auto detect from GPU vendor + WAYLAND_DISPLAY
+    // The decision is written to <config_dir>/render-state.log.
+    #[cfg(target_os = "linux")]
+    {
+        use render_env::{
+            apply_mode, create_recovery_marker, decide_mode, detect_display_server_from_env,
+            detect_gpu_vendor_from_sysfs, is_recovery_needed, resolve_user_override,
+            write_state_log, ModeOverride,
+        };
+        let cfg_dir = config_dir();
+        let env_override = std::env::var("FRANK_SCANLATION_RENDER_MODE").ok();
+        let user_override = resolve_user_override(env_override.as_deref(), &cfg_dir);
+        let recovery = is_recovery_needed(&cfg_dir);
+        let explicit = match user_override {
+            Some(ModeOverride::Explicit(m)) => Some(m),
+            _ => None,
+        };
+        let display = detect_display_server_from_env();
+        let gpu = detect_gpu_vendor_from_sysfs();
+        let (mode, reason) = decide_mode(explicit, recovery, display, gpu);
+        eprintln!(
+            "[frank-scanlation] render mode: {} ({}; display={:?} gpu={:?}{}{})",
+            mode.slug(),
+            reason,
+            display,
+            gpu,
+            if user_override.is_some() {
+                " override=yes"
+            } else {
+                ""
+            },
+            if recovery { " recovery=yes" } else { "" },
+        );
+        // SAFETY: this is the binary's first user-code call after main;
+        // nothing has spawned a thread yet, so the env table has no
+        // concurrent reader.
+        unsafe { apply_mode(mode) };
+        create_recovery_marker(&cfg_dir);
+        write_state_log(
+            &cfg_dir,
+            mode,
+            reason,
+            display,
+            gpu,
+            user_override.is_some(),
+            recovery,
+        );
+    }
+
     let db_path = config_dir().join("library.db");
     let library = Library::open(&db_path)
         .unwrap_or_else(|e| panic!("cannot open library at {}: {e}", db_path.display()));
@@ -422,6 +511,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            mark_app_ready,
             list_manga,
             add_manga,
             remove_manga,
