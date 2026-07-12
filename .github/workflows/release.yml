@@ -197,7 +197,6 @@ jobs:
           | macOS (Apple Silicon) | \`FRANK.Scanlation_${TAG#v}_aarch64.dmg\` |
           | Windows installer | \`FRANK.Scanlation_${TAG#v}_x64-setup.exe\` |
           | Windows MSI | \`FRANK.Scanlation_${TAG#v}_x64_en-US.msi\` |
-          | Android (APK) | \`FRANK.Scanlation_${TAG#v}_android-universal-release.apk\` |
 
           ### Windows first launch
           The installer is not code-signed. SmartScreen may show a warning — click **More info** then **Run anyway**. One-time only.
@@ -250,75 +249,3 @@ jobs:
           gh workflow run aur-publish.yml \
             -f tag="${{ github.ref_name }}" \
             --repo "${{ github.repository }}"
-
-  # Android APK build via tauri-action (experimental mobile support).
-  # Runs after `build` so the GitHub release already exists (created by
-  # tauri-action on the desktop matrix); tauri-action with mobile: android
-  # then runs `tauri android build --apk` and attaches the APK to the same
-  # release. We only set up the system deps (Java, SDK/NDK, Rust targets)
-  # — the build and asset upload are delegated to the action.
-  build-android:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-
-      - name: Install Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android packages
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          key: android
-          cache-on-failure: true
-
-      - name: Gradle cache
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Bun install cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.bun/install/cache
-          key: bun-android-${{ hashFiles('desktop/bun.lock', 'desktop/package.json') }}
-          restore-keys: |
-            bun-android-
-
-      - name: Install frontend dependencies
-        working-directory: desktop
-        run: bun install --frozen-lockfile
-
-      - name: Build Android APK and attach to release
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
-        with:
-          projectPath: desktop
-          tagName: ${{ github.ref_name }}
-          releaseDraft: false
-          prerelease: false
-          mobile: android
-          args: --apk
-          uploadWorkflowArtifacts: true
