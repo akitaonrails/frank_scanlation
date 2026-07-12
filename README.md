@@ -2,9 +2,10 @@
   <h1>FRANK Scanlation</h1>
 
   <p>
-    <strong>A Kindle-like desktop reader for ad-hoc scanlation websites.</strong><br>
+    <strong>A Kindle-like reader for ad-hoc scanlation websites.</strong><br>
     Paste a site URL, get a library card with cover art, chapter tracking,
-    and new-chapter notifications. Read on Linux, macOS, and Windows.
+    and new-chapter notifications. Available on Linux, macOS, Windows,
+    and Android (experimental).
   </p>
 
   <p>
@@ -86,7 +87,7 @@ the fence:
 | Linux | `~/.config/frank-scanlation/` (honors `XDG_CONFIG_HOME`) |
 | macOS | `~/.config/frank-scanlation/` |
 | Windows | `%APPDATA%\frank-scanlation\` |
-| Android | App-private files dir (resolved via Tauri `app_data_dir()`) |
+| Android (experimental) | App-private files dir (resolved via Tauri `app_data_dir()`) |
 
 `library.db` is the SQLite library; `covers/` holds downloaded cover art.
 Reader-mode preferences live in each site's localStorage inside the
@@ -139,12 +140,48 @@ GitHub Actions mirror the FRANK MANGA+ setup:
   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`).
 - `aur-publish.yml` — publishes `frank-scanlation-bin` to the AUR after a
   release. Requires `AUR_USERNAME`, `AUR_EMAIL`, `AUR_SSH_PRIVATE_KEY`.
-- `release.yml` (Android job) — on tag pushes, builds a release APK and
-  attaches it to the GitHub release as
-  `FRANK.Scanlation_<version>_android-*.apk`.
 
 > App icons are generated from `docs/icon.png` — after changing it, rerun
 > `bunx tauri icon ../docs/icon.png` from `desktop/`.
+
+## Android (experimental)
+
+The app can run on Android devices, though this target is still
+experimental and CI-built APKs are not yet published.
+
+**Prerequisites:**
+
+- Android SDK / NDK (set `ANDROID_HOME` and `ANDROID_NDK_HOME`)
+- JDK 17+
+- Rust targets: `rustup target add aarch64-linux-android`
+
+**First-time setup** (required once per clone, since `gen/android/` is
+gitignored):
+
+```bash
+cd desktop
+bunx tauri android init
+```
+
+**Run on a connected device / emulator:**
+
+```bash
+bun run mobile:dev
+```
+
+**Build an APK locally:**
+
+```bash
+bun run mobile:build
+```
+
+> The universal APK produced by `mobile:build` is large (~700 MB).
+> For smaller packages, split by architecture (e.g.
+> `--apk --target aarch64`).
+
+On Android 13+, the app needs the `POST_NOTIFICATIONS` runtime permission
+for new-chapter alerts. Background chapter checking stops when the OS
+kills the process — this is expected Android behaviour.
 
 ## Disclaimer
 

@@ -6,7 +6,6 @@
   "permissions": [
     "core:default",
     "notification:default",
-    "opener:default",
-    "os:default"
+    "opener:default"
   ]
 }

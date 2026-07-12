@@ -38,7 +38,7 @@ describe("mobile CSS guards do not leak into desktop", () => {
       for (const line of lines) {
         const opens = (line.match(/{/g) || []).length;
         const closes = (line.match(/}/g) || []).length;
-        if (line.includes("@media") || line.includes(".mobile-layout")) {
+        if (line.includes("@media")) {
           inGuard = true;
           guardDepth = depth + opens;
         }

@@ -356,7 +356,7 @@ fn remove_manga(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let manga = with_library(&state, |lib| lib.get(id))?;
     with_library(&state, |lib| lib.remove(id))?;
     if let Some(cover) = manga.and_then(|m| m.cover_path) {
-        let _ = std::fs::remove_file(PathBuf::from(cover));
+        let _ = std::fs::remove_file(&cover);
     }
     Ok(())
 }
@@ -655,13 +655,61 @@ fn spawn_update_checker(app: AppHandle, library: Arc<Mutex<Library>>, fetcher: F
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Linux render-mode policy MUST run before any Tauri plugin or
+    // runtime thread spawns — it sets env vars consumed by WebKit, and
+    // the env table must not have concurrent readers.
+    #[cfg(target_os = "linux")]
+    {
+        use render_env::{
+            apply_mode, create_recovery_marker, decide_mode, detect_display_server_from_env,
+            detect_gpu_vendor_from_sysfs, is_recovery_needed, resolve_user_override,
+            write_state_log, ModeOverride,
+        };
+        let cfg_dir = config_dir();
+        let env_override = std::env::var("FRANK_SCANLATION_RENDER_MODE").ok();
+        let user_override = resolve_user_override(env_override.as_deref(), &cfg_dir);
+        let recovery = is_recovery_needed(&cfg_dir);
+        let explicit = match user_override {
+            Some(ModeOverride::Explicit(m)) => Some(m),
+            _ => None,
+        };
+        let display = detect_display_server_from_env();
+        let gpu = detect_gpu_vendor_from_sysfs();
+        let (mode, reason) = decide_mode(explicit, recovery, display, gpu);
+        eprintln!(
+            "[frank-scanlation] render mode: {} ({}; display={:?} gpu={:?}{}{})",
+            mode.slug(),
+            reason,
+            display,
+            gpu,
+            if user_override.is_some() {
+                " override=yes"
+            } else {
+                ""
+            },
+            if recovery { " recovery=yes" } else { "" },
+        );
+        // SAFETY: this runs before any threads are spawned, so the env
+        // table has no concurrent reader.
+        unsafe { apply_mode(mode) };
+        create_recovery_marker(&cfg_dir);
+        write_state_log(
+            &cfg_dir,
+            mode,
+            reason,
+            display,
+            gpu,
+            user_override.is_some(),
+            recovery,
+        );
+    }
+
     let context: tauri::Context<tauri::Wry> = tauri::generate_context!();
     let origins = app_origins(context.config().build.dev_url.as_ref());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_os::init())
         .setup(move |app| {
             #[cfg(target_os = "android")]
             let storage_base = app
@@ -671,60 +719,6 @@ pub fn run() {
             #[cfg(not(target_os = "android"))]
             let storage_base = config_dir();
             let storage_paths = StoragePaths::new(storage_base);
-
-            // Linux-only: pick a WebKit render mode based on the actual
-            // hardware + display server. Order of precedence (highest first):
-            //   1. FRANK_SCANLATION_RENDER_MODE env var
-            //   2. <config_dir>/render.conf `mode = ...`
-            //   3. Crash recovery (last run left a marker behind) → Safe
-            //   4. Auto detect from GPU vendor + WAYLAND_DISPLAY
-            // The decision is written to <config_dir>/render-state.log.
-            #[cfg(target_os = "linux")]
-            {
-                use render_env::{
-                    apply_mode, create_recovery_marker, decide_mode,
-                    detect_display_server_from_env, detect_gpu_vendor_from_sysfs,
-                    is_recovery_needed, resolve_user_override, write_state_log, ModeOverride,
-                };
-                let cfg_dir = config_dir();
-                let env_override = std::env::var("FRANK_SCANLATION_RENDER_MODE").ok();
-                let user_override = resolve_user_override(env_override.as_deref(), &cfg_dir);
-                let recovery = is_recovery_needed(&cfg_dir);
-                let explicit = match user_override {
-                    Some(ModeOverride::Explicit(m)) => Some(m),
-                    _ => None,
-                };
-                let display = detect_display_server_from_env();
-                let gpu = detect_gpu_vendor_from_sysfs();
-                let (mode, reason) = decide_mode(explicit, recovery, display, gpu);
-                eprintln!(
-                    "[frank-scanlation] render mode: {} ({}; display={:?} gpu={:?}{}{})",
-                    mode.slug(),
-                    reason,
-                    display,
-                    gpu,
-                    if user_override.is_some() {
-                        " override=yes"
-                    } else {
-                        ""
-                    },
-                    if recovery { " recovery=yes" } else { "" },
-                );
-                // SAFETY: this runs during Tauri setup before user code has
-                // spawned app-managed threads, so the env table has no
-                // concurrent reader.
-                unsafe { apply_mode(mode) };
-                create_recovery_marker(&cfg_dir);
-                write_state_log(
-                    &cfg_dir,
-                    mode,
-                    reason,
-                    display,
-                    gpu,
-                    user_override.is_some(),
-                    recovery,
-                );
-            }
 
             let library = Library::open(&storage_paths.db_path).unwrap_or_else(|e| {
                 panic!(
