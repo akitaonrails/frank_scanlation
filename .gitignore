@@ -8,6 +8,9 @@ dist/
 .svelte-kit/
 build/
 
+# Generated Tauri Android project
+desktop/src-tauri/gen/
+
 # IDE
 .idea/
 .vscode/*

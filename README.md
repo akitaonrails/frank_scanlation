@@ -124,49 +124,6 @@ bun run tauri dev
 bun run tauri build
 ```
 
-## Android (mobile)
-
-The same Tauri app targets Android. Mobile support is additive: the
-desktop build, behaviour, and storage paths are unchanged — mobile-only
-code lives behind a platform check (`src/lib/platform.ts`) and CSS
-classes gated on `.mobile-layout` / `@media (pointer: coarse)`.
-
-Prerequisites (in addition to the desktop ones): Android SDK, NDK
-`28.2.13676358`, and the Rust Android targets:
-
-```bash
-rustup target add aarch64-linux-android armv7-linux-androideabi \
-    i686-linux-android x86_64-linux-android
-```
-
-Run on a connected device/emulator:
-
-```bash
-cd desktop
-bun run mobile:dev
-```
-
-Build a debug APK:
-
-```bash
-cd desktop
-bun run mobile:build -- --debug
-```
-
-The APK lands under
-`desktop/src-tauri/gen/android/app/build/outputs/apk/`. On Android, data
-lives under the app-private files dir (`app.path().app_data_dir()`), so
-no storage permissions are required.
-
-Reproducible APK builds (CI-equivalent) can be produced locally via the
-Docker image in `mobile-build/`:
-
-```bash
-docker build -t frank-scanlation-android-builder -f mobile-build/Dockerfile .
-docker run --rm -v "$PWD":/work frank-scanlation-android-builder \
-    ./mobile-build/build.sh
-```
-
 ## CI / Releases
 
 GitHub Actions mirror the FRANK MANGA+ setup:
