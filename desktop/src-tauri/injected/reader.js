@@ -59,6 +59,97 @@
   ensureHomeButton();
   document.addEventListener("DOMContentLoaded", ensureHomeButton, { once: true });
 
+  // ---- Minimal ad protections for reading pages ----
+  // The Rust side already refuses top-level navigations that leave the
+  // manga's domains. These two guards handle what never reaches a
+  // navigation: popunders via window.open, and overlay ads injected on
+  // top of the page. Both are deliberately conservative — site chrome
+  // present at load time is never touched.
+  const OVERLAY_MIN_Z_INDEX = 5000;
+  const OVERLAY_MIN_COVERAGE = 0.8;
+  const OVERLAY_MAX_TEXT_CHARS = 60;
+
+  // Pure decision over measured traits, so it's testable: a hostile
+  // overlay is fixed, huge-z, near-fullscreen, and either carries a
+  // foreign ad iframe or has no real text (transparent click-catcher).
+  function hostileOverlayVerdict(traits) {
+    return traits.position === "fixed"
+      && Number.isFinite(traits.zIndex)
+      && traits.zIndex >= OVERLAY_MIN_Z_INDEX
+      && traits.coverage >= OVERLAY_MIN_COVERAGE
+      && (traits.hasForeignFrame || traits.textLength <= OVERLAY_MAX_TEXT_CHARS);
+  }
+
+  function overlayTraits(element) {
+    const style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+    const rect = element.getBoundingClientRect
+      ? element.getBoundingClientRect()
+      : { width: 0, height: 0 };
+    const viewportArea = Math.max(1, (window.innerWidth || 1) * (window.innerHeight || 1));
+    const hasForeignFrame = Array.from(element.querySelectorAll?.("iframe") || []).some((frame) => {
+      const src = safeUrl(frame.getAttribute("src") || "", location.href);
+      return Boolean(src && src.origin !== location.origin);
+    });
+    return {
+      position: style ? style.position : "",
+      zIndex: style ? Number(style.zIndex) : NaN,
+      coverage: (rect.width * rect.height) / viewportArea,
+      textLength: normalizeWhitespace(element.textContent || "").length,
+      hasForeignFrame
+    };
+  }
+
+  function isPmrElement(element) {
+    return Boolean(
+      (typeof element.id === "string" && element.id.startsWith("pmr-"))
+        || element.closest?.("#pmr-reader-root, #pmr-home-button, #pmr-reader-activator, #pmr-kindle-toolbar, #pmr-reader-toast")
+    );
+  }
+
+  function suppressHostileOverlay(element) {
+    if (!(element instanceof Element) || isPmrElement(element)) {
+      return false;
+    }
+    const tag = element.tagName ? element.tagName.toLowerCase() : "";
+    if (["script", "style", "link", "meta", "head", "body", "html"].includes(tag)) {
+      return false;
+    }
+    if (!hostileOverlayVerdict(overlayTraits(element))) {
+      return false;
+    }
+    element.style.setProperty("display", "none", "important");
+    element.style.setProperty("pointer-events", "none", "important");
+    return true;
+  }
+
+  function setupAdProtections() {
+    // Popunder kill: nothing in a reading flow needs window.open, and
+    // this script runs before any site/ad script can grab a reference.
+    window.open = function blockedPopup() {
+      return null;
+    };
+
+    const sweep = (nodes) => {
+      nodes.forEach((node) => {
+        if (suppressHostileOverlay(node)) {
+          console.warn("FRANK Scanlation hid a hostile overlay", node);
+        }
+      });
+    };
+    const overlayObserver = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => sweep(Array.from(mutation.addedNodes || [])));
+    });
+    const observeOverlayRoots = () => {
+      [document.documentElement, document.body].forEach((root) => {
+        if (root) {
+          overlayObserver.observe(root, { childList: true });
+        }
+      });
+    };
+    observeOverlayRoots();
+    document.addEventListener("DOMContentLoaded", observeOverlayRoots, { once: true });
+  }
+
   // Running inside the FRANK Scanlation Tauri webview, not a browser
   // extension: the Rust side prepends the reader stylesheet to this
   // script as window.__FRANK_READER_CSS__ and we inject it into the page.
@@ -202,6 +293,9 @@
   const scriptStartedAt = Date.now();
 
   const kindleMangaPage = isKindleMangaContext();
+  if (!kindleMangaPage) {
+    setupAdProtections();
+  }
   if (kindleMangaPage) {
     setupKindleMangaHandler();
   }
@@ -3048,6 +3142,7 @@
   if (window.__PMR_ENABLE_TEST_API__) {
     window.__PMR_TEST_API__ = {
       HOME_SIGNAL_URL,
+      hostileOverlayVerdict,
       goHome,
       loadSettings,
       saveSettings,

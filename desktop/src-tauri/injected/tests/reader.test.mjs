@@ -300,3 +300,26 @@ test("mangadex api chapter list resolves prev/next by number", () => {
 
   assert.equal(api.mangaDexNavFromChapterList([], 2), null);
 });
+
+test("window.open is neutered on reading pages", () => {
+  const { context } = loadApi();
+  assert.equal(typeof context.window.open, "function");
+  assert.equal(context.window.open("https://ads.example/pop"), null);
+});
+
+test("hostile overlay verdict is conservative", () => {
+  const { api } = loadApi();
+  const base = { position: "fixed", zIndex: 999999, coverage: 0.95, textLength: 0, hasForeignFrame: false };
+
+  // The classic transparent click-catcher and the fullscreen ad iframe.
+  assert.equal(api.hostileOverlayVerdict(base), true);
+  assert.equal(api.hostileOverlayVerdict({ ...base, textLength: 500, hasForeignFrame: true }), true);
+
+  // Site chrome shapes that must survive: modals with real content,
+  // sticky headers, low-z lightboxes, absolutely-positioned wrappers.
+  assert.equal(api.hostileOverlayVerdict({ ...base, textLength: 500 }), false);
+  assert.equal(api.hostileOverlayVerdict({ ...base, coverage: 0.3 }), false);
+  assert.equal(api.hostileOverlayVerdict({ ...base, zIndex: 100 }), false);
+  assert.equal(api.hostileOverlayVerdict({ ...base, zIndex: NaN }), false);
+  assert.equal(api.hostileOverlayVerdict({ ...base, position: "absolute" }), false);
+});

@@ -5,7 +5,7 @@
 //! generic heuristics, mirroring the browser extension's philosophy of
 //! never hardcoding a domain.
 
-use crate::heuristics::{chapter_info_from_url, clean_title};
+use crate::heuristics::{chapter_info_from_url, clean_title, hosts_related};
 use regex::Regex;
 use scraper::{Html, Selector};
 use std::collections::HashMap;
@@ -151,7 +151,11 @@ fn extract_chapters(doc: &Html, base: &Url) -> Vec<ChapterLink> {
         let Some(url) = base.join(href.trim()).ok() else {
             continue;
         };
-        if url.host_str() != base.host_str() || !matches!(url.scheme(), "http" | "https") {
+        let same_site = match (url.host_str(), base.host_str()) {
+            (Some(a), Some(b)) => hosts_related(a, b),
+            _ => false,
+        };
+        if !same_site || !matches!(url.scheme(), "http" | "https") {
             continue;
         }
         let Some(info) = chapter_info_from_url(&url) else {
@@ -218,6 +222,7 @@ mod tests {
       <a href="/category/news/">News</a>
       <a href="/page/2/">Older posts</a>
       <a href="https://other-site.example/manga/foo-chapter-1/">off-site</a>
+      <a href="https://w6.zom-100.example/manga/zom-100-chapter-12/">Chapter 12 on the new mirror</a>
       <a href="/manga/zom-100-chapter-1/">Chapter 1</a>
       <a href="/manga/zom-100-chapter-2/">Chapter 2</a>
       <a href="/manga/zom-100-chapter-2/#comments">Chapter 2 comments</a>
@@ -245,10 +250,10 @@ mod tests {
     fn extracts_dominant_chapter_family_sorted_and_deduped() {
         let info = extract_site_info(HOMEPAGE, &base());
         let numbers: Vec<f64> = info.chapters.iter().map(|c| c.number).collect();
-        assert_eq!(numbers, vec![1.0, 2.0, 10.5, 11.0]);
+        assert_eq!(numbers, vec![1.0, 2.0, 10.5, 11.0, 12.0]);
         assert_eq!(
             info.latest_chapter().unwrap().url,
-            "https://zom-100.example/manga/zom-100-chapter-11/"
+            "https://w6.zom-100.example/manga/zom-100-chapter-12/"
         );
     }
 
@@ -258,14 +263,16 @@ mod tests {
         assert!(info
             .chapters
             .iter()
-            .all(|c| c.url.starts_with("https://zom-100.example/manga/")));
+            .all(|c| c.url.contains("zom-100.example/manga/")));
+        assert!(!info.chapters.iter().any(|c| c.url.contains("other-site")));
     }
 
     #[test]
     fn next_chapter_after_picks_first_newer() {
         let info = extract_site_info(HOMEPAGE, &base());
         assert_eq!(info.next_chapter_after(2.0).unwrap().number, 10.5);
-        assert!(info.next_chapter_after(11.0).is_none());
+        assert_eq!(info.next_chapter_after(11.0).unwrap().number, 12.0);
+        assert!(info.next_chapter_after(12.0).is_none());
     }
 
     #[test]

@@ -17,7 +17,7 @@ mod render_env;
 
 use scanlation_core::extract::SiteInfo;
 use scanlation_core::fetch::{cover_extension, Fetcher};
-use scanlation_core::heuristics::chapter_info_from_url;
+use scanlation_core::heuristics::{chapter_info_from_url, hosts_related};
 use scanlation_core::{mangadex, resolve_site_info, Library, Manga};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -116,6 +116,54 @@ fn is_app_origin(url: &Url, origins: &[String]) -> bool {
     origins.contains(&origin)
 }
 
+/// Hosts a manga's reading session is allowed to navigate within: the
+/// registered site URL plus every chapter URL we have recorded for it.
+fn manga_hosts(manga: &Manga) -> Vec<String> {
+    let mut hosts: Vec<String> = [
+        Some(&manga.url),
+        manga.latest_chapter_url.as_ref(),
+        manga.last_read_url.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|u| Url::parse(u).ok())
+    .filter_map(|u| u.host_str().map(str::to_string))
+    .collect();
+    hosts.sort();
+    hosts.dedup();
+    hosts
+}
+
+/// True when `host` belongs to the same site as an allowed host —
+/// scanlation sites shuffle mirrors across numbered subdomains
+/// (`w4.site.com` → `w6.site.com`), so this matches by apex domain.
+fn is_host_allowed(host: &str, allowed: &[String]) -> bool {
+    allowed.iter().any(|known| hosts_related(host, known))
+}
+
+/// Ad scripts on scanlation sites hijack the top-level page toward
+/// off-site domains. While a manga is open, any main-frame navigation
+/// whose host is outside the manga's known hosts gets denied — the
+/// page simply stays put. App origins and the home signal are handled
+/// before this is consulted.
+fn should_block_reading_navigation(url: &Url, allowed_hosts: &[String]) -> bool {
+    // The hook also sees subframe navigations; scripts routinely spin
+    // up about:blank frames for sandboxing, and a top-level about:blank
+    // can't take the user anywhere — allow it.
+    if url.as_str() == "about:blank" {
+        return false;
+    }
+    if !matches!(url.scheme(), "http" | "https") {
+        // data:, javascript:, custom schemes — nothing legitimate in a
+        // reading flow navigates to these.
+        return true;
+    }
+    let Some(host) = url.host_str() else {
+        return true;
+    };
+    !is_host_allowed(host, allowed_hosts)
+}
+
 /// A navigation only counts as reading progress for the current manga
 /// when it stays on that manga's site — otherwise following an ad or an
 /// off-site link would corrupt the reading state.
@@ -132,7 +180,10 @@ fn same_site(manga: &Manga, url: &Url) -> bool {
     .into_iter()
     .flatten()
     .filter_map(|u| Url::parse(u).ok())
-    .any(|known| known.host_str() == host)
+    .any(|known| match (known.host_str(), host) {
+        (Some(a), Some(b)) => hosts_related(a, b),
+        _ => false,
+    })
 }
 
 /// Chapter number to record for a navigation, if any. Explicit chapter
@@ -736,6 +787,30 @@ pub fn run() {
                             std::thread::spawn(move || go_home(&handle));
                             return false;
                         }
+                        let state: State<'_, AppState> = nav_handle.state();
+                        if is_app_origin(url, &state.app_origins) {
+                            return true;
+                        }
+                        // Reading jail: while a manga is open, refuse to
+                        // leave its domains — ad popunders and redirect
+                        // hijacks die here, the page stays where it was.
+                        let Some(id) = state.current_manga.lock().ok().and_then(|g| *g) else {
+                            return true;
+                        };
+                        let allowed = state
+                            .library
+                            .lock()
+                            .ok()
+                            .and_then(|lib| lib.get(id).ok().flatten())
+                            .map(|manga| manga_hosts(&manga))
+                            .unwrap_or_default();
+                        if allowed.is_empty() {
+                            return true;
+                        }
+                        if should_block_reading_navigation(url, &allowed) {
+                            eprintln!("[frank-scanlation] blocked off-site navigation to {url}");
+                            return false;
+                        }
                         true
                     })
                     .on_page_load(|window, payload| {
@@ -803,6 +878,44 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn manga_hosts_collects_site_and_chapter_hosts() {
+        let mut m = manga(1);
+        m.latest_chapter_url = Some("https://w4.zom.example/manga/zom-chapter-9/".into());
+        m.last_read_url = Some("https://zom.example/manga/zom-chapter-5/".into());
+        assert_eq!(manga_hosts(&m), vec!["w4.zom.example", "zom.example"]);
+    }
+
+    #[test]
+    fn host_allowed_covers_subdomains_both_ways() {
+        let allowed = vec!["zom.example".to_string()];
+        assert!(is_host_allowed("zom.example", &allowed));
+        assert!(is_host_allowed("w4.zom.example", &allowed));
+        assert!(!is_host_allowed("evilzom.example", &allowed));
+        assert!(!is_host_allowed("zom.example.evil.tld", &allowed));
+
+        // Sibling mirrors: the exact migration smokingbehind* pulled.
+        let allowed = vec!["w4.zom.example".to_string()];
+        assert!(is_host_allowed("w6.zom.example", &allowed));
+        assert!(is_host_allowed("zom.example", &allowed));
+        assert!(!is_host_allowed("ads.example", &allowed));
+    }
+
+    #[test]
+    fn reading_navigation_blocks_offsite_and_odd_schemes() {
+        let allowed = vec!["zom.example".to_string()];
+        let ok = Url::parse("https://zom.example/manga/ch-2/").unwrap();
+        let sub = Url::parse("https://cdn.zom.example/page.html").unwrap();
+        let ad = Url::parse("https://tracker.adnetwork.example/click?x=1").unwrap();
+        let data = Url::parse("data:text/html,hi").unwrap();
+        let blank = Url::parse("about:blank").unwrap();
+        assert!(!should_block_reading_navigation(&ok, &allowed));
+        assert!(!should_block_reading_navigation(&sub, &allowed));
+        assert!(should_block_reading_navigation(&ad, &allowed));
+        assert!(should_block_reading_navigation(&data, &allowed));
+        assert!(!should_block_reading_navigation(&blank, &allowed));
     }
 
     #[test]

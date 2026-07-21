@@ -73,6 +73,12 @@ the fence:
   pages/spreads, `D` cycles Single → Double → Book, `N` cycles the night
   filter, `S` toggles scroll snap, `Enter`/`Backspace` jump chapters, `?`
   for help. Mode choice is remembered per manga.
+- **Reading protections**: while a manga is open, the window refuses
+  top-level navigations that leave the manga's own domains (killing ad
+  redirects and popunders at the navigation layer), `window.open` is
+  disabled on reading pages, and freshly-injected full-screen overlay
+  ads get hidden. Deliberately minimal — the sites themselves are
+  untouched.
 - **MangaDex support**: the one host-gated exception to the pure
   heuristics (same stance as the browser extension). MangaDex is an
   API-driven SPA, so title/cover/chapter-list, reading progress, and

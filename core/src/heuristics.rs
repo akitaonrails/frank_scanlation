@@ -97,13 +97,15 @@ pub fn chapter_info_from_text(text: &str, family_source: &str) -> Option<Chapter
     })
 }
 
-/// Parse chapter info from a URL's decoded path.
+/// Parse chapter info from a URL's decoded path. The family embeds the
+/// host's APEX (not the exact host), so the same manga keeps one family
+/// when a site serves chapters from rotating mirror subdomains.
 pub fn chapter_info_from_url(url: &Url) -> Option<ChapterInfo> {
     let path = percent_decode(url.path());
     let family_source = format!(
         "{}://{}{}",
         url.scheme(),
-        url.host_str().unwrap_or_default(),
+        host_apex(url.host_str().unwrap_or_default()),
         path
     );
     chapter_info_from_text(&path, &family_source)
@@ -154,6 +156,32 @@ fn percent_decode(input: &str) -> String {
         i += 1;
     }
     String::from_utf8(out).unwrap_or_else(|_| input.to_string())
+}
+
+/// Approximate registrable apex of a host: the last two labels, or the
+/// last three when the TLD is a two-letter country code behind a common
+/// second-level like `com`/`co` (`site.com.br`, `site.co.uk`).
+/// Scanlation sites hop between numbered subdomains (`w4.` → `w6.`), so
+/// "same site" must mean "same apex", not "same host".
+pub fn host_apex(host: &str) -> String {
+    const SECOND_LEVELS: [&str; 9] = ["com", "net", "org", "co", "gov", "edu", "ac", "or", "ne"];
+    let labels: Vec<&str> = host.split('.').collect();
+    let n = labels.len();
+    if n <= 2 {
+        return host.to_string();
+    }
+    let tld = labels[n - 1];
+    let sld = labels[n - 2];
+    if tld.len() == 2 && SECOND_LEVELS.contains(&sld) {
+        labels[n - 3..].join(".")
+    } else {
+        labels[n - 2..].join(".")
+    }
+}
+
+/// True when two hosts belong to the same site (equal, or same apex).
+pub fn hosts_related(a: &str, b: &str) -> bool {
+    a == b || host_apex(a) == host_apex(b)
 }
 
 /// Clean a page `<title>` into a manga display title: drop everything
@@ -275,6 +303,24 @@ mod tests {
     fn from_url_ignores_query_only_numbers() {
         let url = Url::parse("https://example.test/reader/?id=99").unwrap();
         assert!(chapter_info_from_url(&url).is_none());
+    }
+
+    #[test]
+    fn host_apex_handles_subdomains_and_cc_tlds() {
+        assert_eq!(host_apex("zom.example"), "zom.example");
+        assert_eq!(host_apex("w4.smokingbehind.com"), "smokingbehind.com");
+        assert_eq!(host_apex("a.b.site.org"), "site.org");
+        assert_eq!(host_apex("scans.site.com.br"), "site.com.br");
+        assert_eq!(host_apex("mangadex.org"), "mangadex.org");
+    }
+
+    #[test]
+    fn hosts_related_matches_sibling_subdomains_only() {
+        assert!(hosts_related("w4.site.com", "w6.site.com"));
+        assert!(hosts_related("w4.site.com", "site.com"));
+        assert!(hosts_related("site.com", "site.com"));
+        assert!(!hosts_related("evilsite.com", "site.com"));
+        assert!(!hosts_related("site.com.evil.tld", "site.com"));
     }
 
     #[test]
