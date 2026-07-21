@@ -3309,7 +3309,7 @@ dependencies = [
 
 [[package]]
 name = "scanlation-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "regex",
  "reqwest 0.12.28",
@@ -3325,7 +3325,7 @@ dependencies = [
 
 [[package]]
 name = "scanlation-desktop"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "scanlation-core",
